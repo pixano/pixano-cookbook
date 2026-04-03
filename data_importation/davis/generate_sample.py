@@ -148,7 +148,7 @@ def main():
 
     print(f"\nDone. {total} videos exported.")
     print("\nTo import into Pixano:")
-    print(f"  pixano dataset import ./my_data {output_dir} \\")
+    print(f"  pixano data import ./my_data {output_dir} \\")
     print("      --info examples/davis/info.py:dataset_info")
 
 

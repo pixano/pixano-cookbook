@@ -35,8 +35,7 @@ Usage:
     python generate_sample.py ./flir_sample /path/to/flir_adas_v2 --num-samples 50
 
 Then import into Pixano:
-    pixano data import ./my_data ./flir_sample \\
-        --info examples/flir/info.py:dataset_info
+    pixano data import ./my_data ./flir_sample
 """
 
 import argparse
@@ -45,6 +44,41 @@ import random
 import re
 import shutil
 from pathlib import Path
+
+
+_HEADER = json.dumps({"$pixano": "jsonl/2", "defaults": {"bbox": {"format": "xywh", "is_normalized": True}}})
+
+DATASET_YAML_IMAGE = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: flir_static_sample
+  workspace: image
+schema:
+  views:
+    rgb: { kind: image }
+    thermal: { kind: image }
+  entity:
+    attrs:
+      category: str
+  annotations: [bbox]
+"""
+
+DATASET_YAML_VIDEO = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: flir_dynamic_sample
+  workspace: video
+schema:
+  views:
+    rgb: { kind: sequence_frames }
+    thermal: { kind: sequence_frames }
+  entity:
+    attrs:
+      category: str
+  annotations: [bbox, tracklet]
+"""
 
 
 def _load_json(path: Path) -> dict:
@@ -146,21 +180,19 @@ def export_video_test(
                 categories.append(category_map.get(ann.get("category_id", 0), "unknown"))
 
         entry: dict = {
-            "status": "validated",
             "views": {
                 "rgb": f"rgb/{out_name}",
                 "thermal": f"thermal/{out_name}",
             },
+            "attrs": {"status": "validated"},
         }
         if bboxes:
             entry["entities"] = [
                 {
-                    "category": category,
-                    "annotations": {
-                        "thermal": {
-                            "bbox": bbox,
-                        }
-                    },
+                    "attrs": {"category": category},
+                    "annotations": [
+                        {"kind": "bbox", "view": "thermal", "coords": bbox},
+                    ],
                 }
                 for bbox, category in zip(bboxes, categories)
             ]
@@ -169,7 +201,7 @@ def export_video_test(
         exported += 1
 
     metadata_path = split_dir / "metadata.jsonl"
-    metadata_path.write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
+    metadata_path.write_text(_HEADER + "\n" + "\n".join(metadata_lines) + "\n", encoding="utf-8")
 
     print(f"  Exported {exported} frame pairs to {split_dir}")
     return exported
@@ -277,31 +309,33 @@ def export_video_test_video_mode(
                                 "category": category_map.get(ann.get("category_id", 0), "unknown"),
                             }
                         )
-                    bbox_json = {
-                        "view_name": "thermal",
-                        "objects": objects,
-                    }
+                    bbox_json = {"objects": objects}
                     json_name = f"{idx:06d}.json"
                     (bbox_dir / json_name).write_text(
                         json.dumps(bbox_json, ensure_ascii=False) + "\n", encoding="utf-8"
                     )
 
         entry = {
-            "status": "validated",
+            "attrs": {"status": "validated"},
             "views": {
-                "rgb": {"path": f"rgb/{video_name}/*.jpg", "fps": 30},
-                "thermal": {"path": f"thermal/{video_name}/*.jpg", "fps": 30},
+                "rgb": {"frame_pattern": f"rgb/{video_name}/*.jpg", "fps": 30},
+                "thermal": {"frame_pattern": f"thermal/{video_name}/*.jpg", "fps": 30},
             },
-            "annotation_files": {
-                "bbox": f"bboxes/{video_name}/*.json",
-            },
+            "annotation_files": [
+                {
+                    "kind": "bbox",
+                    "view": "thermal",
+                    "pattern": f"bboxes/{video_name}/*.json",
+                    "encoding": "track_json",
+                },
+            ],
         }
         metadata_lines.append(json.dumps(entry, ensure_ascii=False))
         exported += 1
         print(f"  {video_name}: {len(frames)} frames (source video-{video_id})")
 
     metadata_path = split_dir / "metadata.jsonl"
-    metadata_path.write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
+    metadata_path.write_text(_HEADER + "\n" + "\n".join(metadata_lines) + "\n", encoding="utf-8")
 
     print(f"  Exported {exported} videos to {split_dir}")
     return exported
@@ -361,17 +395,17 @@ def main():
     print(f"Generating FLIR ADAS v2 sample ({args.mode} mode) in {output_dir}")
 
     if args.mode == "video":
+        (output_dir / "dataset.yaml").write_text(DATASET_YAML_VIDEO, encoding="utf-8")
         total = export_video_test_video_mode(output_dir, flir_root, args.num_samples, args.seed)
-        schema_object = "video_dataset_info"
         unit = "videos"
     else:
+        (output_dir / "dataset.yaml").write_text(DATASET_YAML_IMAGE, encoding="utf-8")
         total = export_video_test(output_dir, flir_root, args.num_samples, args.seed)
-        schema_object = "dataset_info"
         unit = "frame pairs"
 
     print(f"\nDone. {total} {unit} exported.")
     print("\nTo import into Pixano:")
-    print(f"  pixano data import ./my_data {output_dir} --info examples/flir/info.py:{schema_object}")
+    print(f"  pixano data import ./my_data {output_dir}")
 
 
 if __name__ == "__main__":

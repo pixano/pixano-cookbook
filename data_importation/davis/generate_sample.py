@@ -10,12 +10,14 @@ Produces a Pixano-compatible folder structure with metadata.jsonl files
 ready to import with `pixano data import`.
 
 Usage:
-    python examples/davis/generate_sample.py ./davis_sample /path/to/DAVIS --num-samples 5
-    python examples/davis/generate_sample.py ./davis_sample /path/to/DAVIS --splits train val
+    python data_importation/davis/generate_sample.py ./davis_sample /path/to/DAVIS --num-samples 5
+    python data_importation/davis/generate_sample.py ./davis_sample --synthetic 2   # no DAVIS download needed
+
+Requirements (only for --synthetic):
+    pip install pillow numpy
 
 Then import into Pixano:
-    pixano data import ./my_data ./davis_sample \
-        --info examples/davis/info.py:dataset_info
+    pixano data import ./my_data ./davis_sample
 """
 
 import argparse
@@ -23,6 +25,71 @@ import json
 import random
 import shutil
 from pathlib import Path
+
+
+DATASET_YAML = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: davis_2017
+  workspace: video
+schema:
+  views:
+    image: { kind: sequence_frames }
+  entity:
+    attrs:
+      category: { type: str, default: object }
+  annotations: [mask, tracklet]
+"""
+
+
+def _metadata_line(video_name: str, fps: int = 24) -> str:
+    entry = {
+        "attrs": {"status": "validated"},
+        "views": {
+            "image": {"frame_pattern": f"frames/{video_name}/*.jpg", "fps": fps},
+        },
+        "annotation_files": [
+            {
+                "kind": "mask",
+                "view": "image",
+                "pattern": f"masks/{video_name}/*.png",
+                "encoding": "index_png",
+                "entity_map": "auto",
+            },
+        ],
+    }
+    return json.dumps(entry, ensure_ascii=False)
+
+
+def export_synthetic(output_dir: Path, num_videos: int, seed: int) -> int:
+    """Write tiny synthetic frame/mask sequences — checkpoint-friendly, no DAVIS download."""
+    import numpy as np
+    from PIL import Image
+
+    rng = random.Random(seed)
+    split_dir = output_dir / "train"
+    metadata_lines: list[str] = []
+    for video_index in range(num_videos):
+        video_name = f"synthetic_{video_index:02d}"
+        frames_dir = split_dir / "frames" / video_name
+        masks_dir = split_dir / "masks" / video_name
+        frames_dir.mkdir(parents=True)
+        masks_dir.mkdir(parents=True)
+        for frame_index in range(4):
+            frame = np.full((64, 64, 3), rng.randrange(64, 192), dtype=np.uint8)
+            mask = np.zeros((64, 64), dtype=np.uint8)
+            # two objects drifting right, one pixel value each (0 = background)
+            for object_value in (1, 2):
+                x = 8 + 12 * object_value + 3 * frame_index
+                frame[10 * object_value : 10 * object_value + 12, x : x + 12] = 255
+                mask[10 * object_value : 10 * object_value + 12, x : x + 12] = object_value
+            Image.fromarray(frame).save(frames_dir / f"{frame_index:05d}.jpg")
+            Image.fromarray(mask).save(masks_dir / f"{frame_index:05d}.png")
+        metadata_lines.append(_metadata_line(video_name))
+    (split_dir / "metadata.jsonl").write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
+    print(f"  train: generated {num_videos} synthetic videos in {split_dir}")
+    return num_videos
 
 
 def _load_split_video_names(davis_root: Path, split: str) -> list[str]:
@@ -75,17 +142,8 @@ def export_split(output_dir: Path, split: str, num_samples: int, seed: int, davi
         for mask_file in sorted(src_masks.glob("*.png")):
             shutil.copy2(mask_file, dst_masks / mask_file.name)
 
-        # Build metadata entry with glob patterns
-        entry = {
-            "status": "validated",
-            "views": {
-                "image": {"path": f"frames/{video_name}/*.jpg", "fps": 24},
-            },
-            "annotation_files": {
-                "mask": f"masks/{video_name}/*.png",
-            },
-        }
-        metadata_lines.append(json.dumps(entry, ensure_ascii=False))
+        # Build metadata entry with glob patterns (JSONL v2)
+        metadata_lines.append(_metadata_line(video_name))
 
     # Write metadata.jsonl
     metadata_path = split_dir / "metadata.jsonl"
@@ -108,7 +166,16 @@ def main():
     parser.add_argument(
         "davis_root",
         type=Path,
+        nargs="?",
+        default=None,
         help="Path to the DAVIS dataset root (containing JPEGImages/, Annotations/, ImageSets/).",
+    )
+    parser.add_argument(
+        "--synthetic",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Generate N tiny synthetic videos instead of sampling DAVIS (no download needed).",
     )
     parser.add_argument(
         "--num-samples",
@@ -135,21 +202,26 @@ def main():
     if output_dir.exists():
         parser.error(f"Output directory '{output_dir}' already exists. Remove it or choose another path.")
 
-    davis_root: Path = args.davis_root
-    if not davis_root.is_dir():
-        parser.error(f"DAVIS root directory '{davis_root}' does not exist.")
+    if args.synthetic <= 0 and args.davis_root is None:
+        parser.error("Provide a DAVIS root directory, or use --synthetic N to generate tiny sample videos.")
 
     output_dir.mkdir(parents=True)
+    (output_dir / "dataset.yaml").write_text(DATASET_YAML, encoding="utf-8")
     print(f"Generating DAVIS 2017 sample in {output_dir}")
 
     total = 0
-    for split in args.splits:
-        total += export_split(output_dir, split, args.num_samples, args.seed, davis_root)
+    if args.synthetic > 0:
+        total = export_synthetic(output_dir, args.synthetic, args.seed)
+    else:
+        davis_root: Path = args.davis_root
+        if not davis_root.is_dir():
+            parser.error(f"DAVIS root directory '{davis_root}' does not exist.")
+        for split in args.splits:
+            total += export_split(output_dir, split, args.num_samples, args.seed, davis_root)
 
     print(f"\nDone. {total} videos exported.")
     print("\nTo import into Pixano:")
-    print(f"  pixano dataset import ./my_data {output_dir} \\")
-    print("      --info examples/davis/info.py:dataset_info")
+    print(f"  pixano data import ./my_data {output_dir}")
 
 
 if __name__ == "__main__":

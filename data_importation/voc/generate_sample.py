@@ -17,7 +17,7 @@ Usage:
     python generate_voc_sample.py ./voc_sample --num-samples 100 --splits train validation test
 
 Then import into Pixano:
-    pixano data import ./my_data ./voc_sample --info examples/voc/info.py:dataset_info
+    pixano data import ./my_data ./voc_sample
 """
 
 import argparse
@@ -38,6 +38,20 @@ _ARCHIVES = {
     "trainval": "VOCtrainval_06-Nov-2007.zip",
     "test": "VOCtest_06-Nov-2007.zip",
 }
+
+DATASET_YAML = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: voc_2007
+  workspace: image
+schema:
+  entity:
+    attrs:
+      category: str
+      is_difficult: { type: bool, default: false }
+  annotations: [bbox, keypoint, mask]
+"""
 _CACHE_DIR = Path.home() / ".cache" / "pixano" / "voc2007"
 
 # Map CLI split names to VOC ImageSets filenames
@@ -209,25 +223,24 @@ def export_split(output_dir: Path, split: str, num_samples: int, seed: int, voc_
             h = (ymax - ymin) / height
             entities.append(
                 {
-                    "category": obj["category"],
-                    "is_difficult": obj["is_difficult"],
-                    "annotations": {
-                        "image": {
-                            "bbox": [round(x, 6), round(y, 6), round(w, 6), round(h, 6)],
-                        }
-                    },
+                    "attrs": {"category": obj["category"], "is_difficult": obj["is_difficult"]},
+                    "annotations": [
+                        {"kind": "bbox", "coords": [round(x, 6), round(y, 6), round(w, 6), round(h, 6)]},
+                    ],
                 }
             )
 
-        # Build metadata line
-        entry: dict = {"status": "validated", "views": {"image": filename}}
+        # Build metadata line (JSONL v2)
+        entry: dict = {"views": {"image": filename}, "attrs": {"status": "validated"}}
         if entities:
             entry["entities"] = entities
         metadata_lines.append(json.dumps(entry, ensure_ascii=False))
 
-    # Write metadata.jsonl
+    # Write metadata.jsonl: a header line declares file-scoped bbox defaults,
+    # so per-annotation format/is_normalized boilerplate disappears.
+    header = json.dumps({"$pixano": "jsonl/2", "defaults": {"bbox": {"format": "xywh", "is_normalized": True}}})
     metadata_path = split_dir / "metadata.jsonl"
-    metadata_path.write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
+    metadata_path.write_text(header + "\n" + "\n".join(metadata_lines) + "\n", encoding="utf-8")
 
     print(f"  {split}: exported {num_samples} images to {split_dir}")
     return num_samples
@@ -272,6 +285,7 @@ def main():
     voc_root = _ensure_voc_downloaded(args.splits)
 
     output_dir.mkdir(parents=True)
+    (output_dir / "dataset.yaml").write_text(DATASET_YAML, encoding="utf-8")
     print(f"Generating VOC 2007 sample in {output_dir}")
 
     total = 0
@@ -280,7 +294,7 @@ def main():
 
     print(f"\nDone. {total} images exported.")
     print("\nTo import into Pixano:")
-    print(f"  pixano data import ./my_data {output_dir} --info examples/voc/info.py:dataset_info")
+    print(f"  pixano data import ./my_data {output_dir}")
 
 
 if __name__ == "__main__":

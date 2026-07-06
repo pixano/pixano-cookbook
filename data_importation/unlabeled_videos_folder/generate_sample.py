@@ -6,17 +6,13 @@
 
 r"""Generate a Pixano-compatible sample folder from all videos in a folder.
 
-This script extracts frames from input videos and organizes them into
-a folder structure with `train/` (empty) and `val/` (populated) splits.
-video is represented as a sequence of images, and metadata is stored
-in `metadata.jsonl` for import into Pixano.
+This script extracts frames from input videos into a `val/` split (each
+video becomes a sequence of images) and writes the metadata.jsonl and
+dataset.yaml files ready for import into Pixano.
 
 Expected output folder structure::
 
     output_root/
-    ├── train/
-    │   ├── frames/        # empty
-    │   └── metadata.jsonl # optional/empty
     └── val/
         ├── frames/
         │   └── <video_name>/
@@ -28,11 +24,30 @@ Usage:
     python generate_sample.py --input_folder ./videos --output ./sample_videos
 
 Then import into Pixano:
-    pixano data import ./my_data ./sample_videos --info examples/unlabeled_videos_folder/info.py:dataset_info
+    pixano data import ./my_data ./sample_videos
 """
 
 import argparse
 import json
+
+
+DATASET_YAML = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: my_videos
+  workspace: video
+schema:
+  views:
+    image: { kind: sequence_frames }
+  entity:
+    attrs:
+      category: str
+      sub_category: str
+      is_occluded: { type: bool, default: false }
+      custom_value: { type: float, default: 0.0 }
+  annotations: [bbox, mask, tracklet]
+"""
 from pathlib import Path
 
 import cv2
@@ -81,12 +96,8 @@ def generate_dataset_from_folder(input_folder: Path, output_root: Path):
         return
 
     # Define train and validation directories
-    train_frames = output_root / "train" / "frames"
     val_frames = output_root / "val" / "frames"
-
-    # Create folders
-    for d in [train_frames, val_frames]:
-        d.mkdir(parents=True, exist_ok=True)
+    val_frames.mkdir(parents=True, exist_ok=True)
 
     metadata_path = output_root / "val" / "metadata.jsonl"
     metadata_lines = []
@@ -99,22 +110,22 @@ def generate_dataset_from_folder(input_folder: Path, output_root: Path):
         frame_dir = val_frames / video_name
         fps = extract_frames(video_path, frame_dir)
 
-        # Build metadata entry (no masks/annotations)
+        # Build metadata entry (JSONL v2; no annotations yet)
         entry = {
-            "status": "unlabeled",
             "views": {
                 "image": {
-                    "path": f"frames/{video_name}/*.jpg",
+                    "frame_pattern": f"frames/{video_name}/*.jpg",
                     "fps": fps,
                 }
             },
         }
         metadata_lines.append(json.dumps(entry, ensure_ascii=False))
 
-    # Write metadata.jsonl
+    # Write metadata.jsonl and the dataset.yaml manifest
     metadata_path.write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
+    (output_root / "dataset.yaml").write_text(DATASET_YAML, encoding="utf-8")
     print(f"\nMetadata saved to {metadata_path}")
-    print("Dataset generation complete.")
+    print(f"Dataset generation complete.\n\nTo import into Pixano:\n  pixano data import ./my_data {output_root}")
 
 
 def main():

@@ -4,61 +4,65 @@
 # License: CECILL-C
 # =====================================
 
-r"""Generate a Pixano-compatible dataset from a folder of unannotated images.
+r"""Arrange a folder of unannotated images into a Pixano-importable source.
 
-This script creates `train/` (empty) and `val/` (populated) splits and
-metadata.jsonl files ready for Pixano import.
+Media-only import: a split folder of images with NO metadata.jsonl imports
+as one record per file. The only other thing Pixano needs is the
+dataset.yaml manifest this script writes at the source root.
 
-Expected folder structure::
+Produced structure::
 
     output_root/
-    ├── train/
-    │   └── metadata.jsonl # optional/empty
+    ├── dataset.yaml
     └── val/
         ├── <image_name_0>.jpg
-        ├── <image_name_1>.jpg
-        └── metadata.jsonl
+        └── <image_name_1>.jpg
 
 Usage:
-    python generate_sample.py --input_folder ./images --output ./sample_images
+    python data_importation/unlabeled_images_folder/generate_sample.py --input_folder ./images --output ./sample_images
 
 Then import into Pixano:
-    pixano data import ./my_data ./sample_images --info examples/unlabeled_images_folder/info.py:dataset_info
+    pixano data import ./my_data ./sample_images
 """
 
 import argparse
-import json
 import shutil
 from pathlib import Path
 
 
+DATASET_YAML = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: my_images
+  workspace: image
+schema:
+  entity:
+    attrs:
+      category: str
+      sub_category: str
+      is_occluded: { type: bool, default: false }
+      custom_value: { type: float, default: 0.0 }
+  annotations: [bbox, mask]
+"""
+
+
 def generate_image_dataset(input_folder: Path, output_root: Path):
-    """Copy images into a Pixano-compatible folder and generate metadata."""
-    # Define train/val directories
-    train_images = output_root / "train"
+    """Copy images into a media-only Pixano source (no metadata.jsonl needed)."""
     val_images = output_root / "val"
+    val_images.mkdir(parents=True, exist_ok=True)
+    (output_root / "dataset.yaml").write_text(DATASET_YAML, encoding="utf-8")
 
-    for d in [train_images, val_images]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    metadata_lines = []
     image_extensions = [".jpg", ".jpeg", ".png", ".bmp", ".tif"]
-
+    copied = 0
     for img_path in sorted(input_folder.iterdir()):
         if img_path.suffix.lower() not in image_extensions:
             continue
-        dst_path = val_images / img_path.name
-        shutil.copy2(img_path, dst_path)
+        shutil.copy2(img_path, val_images / img_path.name)
+        copied += 1
 
-        # Add metadata entry (no masks/entities)
-        entry = {"status": "unlabeled", "views": {"image": img_path.name}}
-        metadata_lines.append(json.dumps(entry, ensure_ascii=False))
-
-    # Write metadata.jsonl
-    metadata_path = output_root / "val" / "metadata.jsonl"
-    metadata_path.write_text("\n".join(metadata_lines) + "\n", encoding="utf-8")
-    print(f"Metadata saved to {metadata_path}")
-    print(f"Dataset generation complete ({len(metadata_lines)} images).")
+    print(f"Dataset generation complete ({copied} images).")
+    print(f"\nTo import into Pixano:\n  pixano data import ./my_data {output_root}")
 
 
 def main():

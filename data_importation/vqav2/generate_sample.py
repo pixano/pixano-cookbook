@@ -19,7 +19,7 @@ Usage:
     python generate_sample.py ./vqav2_sample --num-samples 100
 
 Then import into Pixano:
-    pixano data import ./my_data ./vqav2_sample --info examples/vqav2/info.py:dataset_info
+    pixano data import ./my_data ./vqav2_sample
 """
 
 import argparse
@@ -28,6 +28,21 @@ import random
 from pathlib import Path
 
 from datasets import load_dataset
+
+
+DATASET_YAML = """\
+pixano: 2
+format: pixano_jsonl
+dataset:
+  name: vqav2_sample
+  workspace: image_vqa
+schema:
+  entity:
+    attrs:
+      category: str
+      subcategory: str
+  annotations: [message, bbox, mask]
+"""
 from PIL import Image
 
 
@@ -67,16 +82,19 @@ def export_split(output_dir: Path, num_samples: int, seed: int) -> int:
             pil_image = pil_image.convert("RGB")
         pil_image.save(dst_image, "JPEG")
 
-        # Build conversation entry
+        # Build conversation entry (JSONL v2: typed messages, question_type is explicit)
         conversation: dict = {
-            "question": {
-                "content": entry["question"],
-                "question_type": "OPEN",
-            },
-            "responses": [{"content": entry["multiple_choice_answer"]}],
+            "messages": [
+                {"type": "QUESTION", "question_type": "OPEN", "content": entry["question"]},
+                {"type": "ANSWER", "content": entry["multiple_choice_answer"]},
+            ],
         }
 
-        metadata_entry = {"status": "validated", "views": {"image": filename}, "messages": [conversation]}
+        metadata_entry = {
+            "views": {"image": filename},
+            "attrs": {"status": "validated"},
+            "conversations": [conversation],
+        }
         metadata_lines.append(json.dumps(metadata_entry, ensure_ascii=False))
 
     # Write metadata.jsonl
@@ -116,13 +134,14 @@ def main():
         parser.error(f"Output directory '{output_dir}' already exists. Remove it or choose another path.")
 
     output_dir.mkdir(parents=True)
+    (output_dir / "dataset.yaml").write_text(DATASET_YAML, encoding="utf-8")
     print(f"Generating VQAv2 sample in {output_dir}")
 
     total = export_split(output_dir, args.num_samples, args.seed)
 
     print(f"\nDone. {total} images exported.")
     print("\nTo import into Pixano:")
-    print(f"  pixano data import ./my_data {output_dir} --info examples/vqav2/info.py:dataset_info")
+    print(f"  pixano data import ./my_data {output_dir}")
 
 
 if __name__ == "__main__":

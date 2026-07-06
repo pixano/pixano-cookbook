@@ -92,6 +92,21 @@ def export_synthetic(output_dir: Path, num_videos: int, seed: int) -> int:
     return num_videos
 
 
+def _detect_resolution(davis_root: Path) -> str:
+    """Pick the resolution folder the DAVIS download actually contains (480p, Full-Resolution, ...)."""
+    jpeg_root = davis_root / "JPEGImages"
+    for resolution in ("480p", "Full-Resolution", "1080p"):
+        if (jpeg_root / resolution).is_dir():
+            return resolution
+    candidates = sorted(d.name for d in jpeg_root.iterdir() if d.is_dir()) if jpeg_root.is_dir() else []
+    if len(candidates) == 1:
+        return candidates[0]
+    raise SystemExit(
+        f"Could not find a resolution folder under '{jpeg_root}' (found: {candidates or 'nothing'}). "
+        "Expected e.g. JPEGImages/480p/<video>/*.jpg."
+    )
+
+
 def _load_split_video_names(davis_root: Path, split: str) -> list[str]:
     """Read video names for a split from ImageSets/2017/{split}.txt."""
     split_file = davis_root / "ImageSets" / "2017" / f"{split}.txt"
@@ -122,8 +137,9 @@ def export_split(output_dir: Path, split: str, num_samples: int, seed: int, davi
     num_samples = min(num_samples, len(video_names))
     sampled_videos = sorted(rng.sample(video_names, num_samples))
 
-    jpeg_dir = davis_root / "JPEGImages" / "Full-Resolution"
-    anno_dir = davis_root / "Annotations" / "Full-Resolution"
+    resolution = _detect_resolution(davis_root)
+    jpeg_dir = davis_root / "JPEGImages" / resolution
+    anno_dir = davis_root / "Annotations" / resolution
 
     metadata_lines: list[str] = []
 
@@ -132,15 +148,23 @@ def export_split(output_dir: Path, split: str, num_samples: int, seed: int, davi
         src_frames = jpeg_dir / video_name
         dst_frames = split_dir / "frames" / video_name
         dst_frames.mkdir(parents=True, exist_ok=True)
+        frames_copied = 0
         for frame_file in sorted(src_frames.glob("*.jpg")):
             shutil.copy2(frame_file, dst_frames / frame_file.name)
+            frames_copied += 1
+        if frames_copied == 0:
+            raise SystemExit(f"No frames found for video '{video_name}' under '{src_frames}'.")
 
         # Copy mask PNGs
         src_masks = anno_dir / video_name
         dst_masks = split_dir / "masks" / video_name
         dst_masks.mkdir(parents=True, exist_ok=True)
+        masks_copied = 0
         for mask_file in sorted(src_masks.glob("*.png")):
             shutil.copy2(mask_file, dst_masks / mask_file.name)
+            masks_copied += 1
+        if masks_copied == 0:
+            raise SystemExit(f"No masks found for video '{video_name}' under '{src_masks}'.")
 
         # Build metadata entry with glob patterns (JSONL v2)
         metadata_lines.append(_metadata_line(video_name))
